@@ -18,12 +18,16 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 // ConfigMapReconciler reconciles a ConfigMap object
@@ -31,6 +35,9 @@ type ConfigMapReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
+
+var FINALIZER string = "k8s-auditor.supermacy.io/config-sync"
+var SEARCH_LABEL string = "searchable"
 
 //+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=configmaps/status,verbs=get;update;patch
@@ -47,8 +54,23 @@ type ConfigMapReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.11.0/pkg/reconcile
 func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
+	log.Log.Info("Reconciling for Request", "req", req.NamespacedName)
+	var currentConfigMap corev1.ConfigMap
+	if err := r.Get(ctx, req.NamespacedName, &currentConfigMap); err != nil {
+		return ctrl.Result{}, err
+	}
+	fmt.Println("", controllerutil.ContainsFinalizer(&currentConfigMap, FINALIZER))
+	if !controllerutil.ContainsFinalizer(&currentConfigMap, FINALIZER) {
+		// TODO: We get this situation when :-
+		// 1. New Config is added to the system
+		// 2. Existing config with this labels have been added to the system
+		controllerutil.AddFinalizer(&currentConfigMap, FINALIZER)
+		fmt.Println(currentConfigMap.GetObjectMeta().GetFinalizers())
+		if err := r.Update(ctx, &currentConfigMap); err != nil {
+			return ctrl.Result{}, err
+		}
 
-	// TODO(user): your logic here
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -57,5 +79,26 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 func (r *ConfigMapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.ConfigMap{}).
+		WithEventFilter(predicate.Funcs{
+			CreateFunc: func(ce event.CreateEvent) bool {
+				labels := ce.Object.GetLabels()
+				if _, found := labels[SEARCH_LABEL]; found && controllerutil.ContainsFinalizer(ce.Object, FINALIZER) {
+					log.Log.Info("New config map created", "config map", ce.Object.GetName())
+					return true
+				}
+				return false
+			},
+			UpdateFunc: func(ue event.UpdateEvent) bool {
+				fmt.Println(ue.ObjectOld.GetGeneration(), ue.ObjectNew.GetGeneration())
+				labels := ue.ObjectNew.GetLabels()
+				if _, found := labels[SEARCH_LABEL]; found {
+					return true
+				}
+				return false
+			},
+			DeleteFunc: func(de event.DeleteEvent) bool {
+				return false
+			},
+		}).
 		Complete(r)
 }
