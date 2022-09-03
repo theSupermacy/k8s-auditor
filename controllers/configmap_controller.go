@@ -59,17 +59,29 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.Get(ctx, req.NamespacedName, &currentConfigMap); err != nil {
 		return ctrl.Result{}, err
 	}
-	fmt.Println("", controllerutil.ContainsFinalizer(&currentConfigMap, FINALIZER))
-	if !controllerutil.ContainsFinalizer(&currentConfigMap, FINALIZER) {
-		// TODO: We get this situation when :-
-		// 1. New Config is added to the system
-		// 2. Existing config with this labels have been added to the system
-		controllerutil.AddFinalizer(&currentConfigMap, FINALIZER)
-		fmt.Println(currentConfigMap.GetObjectMeta().GetFinalizers())
-		if err := r.Update(ctx, &currentConfigMap); err != nil {
-			return ctrl.Result{}, err
-		}
 
+	if currentConfigMap.ObjectMeta.DeletionTimestamp.IsZero() {
+		if !controllerutil.ContainsFinalizer(&currentConfigMap, FINALIZER) {
+			// TODO: We get this situation when :-
+			// 1. New Config is added to the system
+			// 2. Existing config with this labels have been added to the system
+			controllerutil.AddFinalizer(&currentConfigMap, FINALIZER)
+			fmt.Println(currentConfigMap.GetObjectMeta().GetFinalizers())
+			if err := r.Update(ctx, &currentConfigMap); err != nil {
+				return ctrl.Result{}, err
+			}
+
+		}
+	} else {
+		if controllerutil.ContainsFinalizer(&currentConfigMap, FINALIZER) {
+			// This handles the case where we have deleted config map and we need to update something into external system
+			// Remove Your things
+
+			controllerutil.RemoveFinalizer(&currentConfigMap, FINALIZER)
+			if err := r.Update(ctx, &currentConfigMap); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -97,7 +109,7 @@ func (r *ConfigMapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return false
 			},
 			DeleteFunc: func(de event.DeleteEvent) bool {
-				return false
+				return true
 			},
 		}).
 		Complete(r)
